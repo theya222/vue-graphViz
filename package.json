@@ -16,10 +16,13 @@
   },
   "dependencies": {
     "d3": "4.9.1",
+    "interactjs": "^1.3.4",
     "medium-editor": "^5.23.3",
-    "networkvizjs": "git+https://github.com/SpyR1014/networkVizJS.git#535e39ce45bcce94327581e5e5aebdc02c940c04",
+    "networkvizjs": "git+https://github.com/AndrewJakubowicz/networkVizJS.git#e7d658c6635319b072509f91ff9c15dbe65d43a1",
     "rxjs": "5.4.1",
-    "vue": "^2.3.3"
+    "uuid": "^3.3.2",
+    "vue": "^2.3.3",
+    "vue-color": "^2.4.6"
   },
   "devDependencies": {
     "autoprefixer": "^6.7.2",

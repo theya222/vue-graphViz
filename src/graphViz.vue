@@ -3,9 +3,17 @@
     <link v-once rel="stylesheet" href="./static/fonts/font-awesome/css/font-awesome.css"/>
     <!-- <link v-once rel="stylesheet" href="./static/style.css" /> -->
 
-    <nodeList v-bind:nodesOutside='nodesOutsideDiagram' @clickedNodeInList="addNode($event)"/>
-    <toolBar @clickedAction="changeMouseState($event)" @mouseEnter="deleteRadial()"/>
-
+    <nodeList v-bind:nodesOutside='nodesOutsideDiagram'
+              @clickedNodeInList="addNode($event)"/>
+    <toolBar @clickedAction="changeMouseState($event)"
+             @mouseEnter="deleteRadial()"
+             :mouse="this.mouseState"/>
+    <photoshop-picker v-show="ifColorPickerOpen"
+                      :style="styleObject"
+                      :value="colors"
+                      @input="updateFromPicker"
+                      ref="vueColorPicker">
+    </photoshop-picker>
     <div id="graph" v-on:dblclick="dblClickOnPage"></div>
 
   </div>
@@ -18,46 +26,63 @@
    - mouseoutnode, void
    */
   import uuid from 'uuid';
+  import {Compact} from 'vue-color';
   import networkViz from 'networkvizjs';
+  import Rx from 'rxjs/Rx';
   import nodeList from './components/nodeList';
   import toolBar from './components/toolBar';
   import linkTool from './behaviours/link-tool';
   import textEdit from './behaviours/text-edit';
+  import Selection from './behaviours/selection';
 
-  const Rx = require('rxjs');
-  const DELETE = 'DELETE';
+  const ADDNOTE = 'ADDNOTE';
+  const BOLD = 'BOLD';
+  const CLEARHISTORY = 'CLEARHISTORY';
+  const CLEARSCREEN = 'CLEARSCREEN';
+  const COLOR = 'COLOR';
+  const COPY = 'COPY';
+  const CREATE = 'CREATE';
   const CREATEEDGE = 'CREATEEDGE';
+  const DELETE = 'DELETE';
+  const EDGEEDIT = 'EDGEEDIT';
+  const IMAGE = 'IMAGE';
+  const IMPORTPROB = 'IMPORTPROB';
+  const ITALIC = 'ITALIC';
+  const NODEEDIT = 'NODEEDIT';
+  const PIN = 'PIN';
+  const REDO = 'REDO';
+  const REMOVEARROWS = 'REMOVEARROWS';
   const POINTER = 'POINTER';
   const SAVE = 'SAVE';
-  const ADDNOTE = 'ADDNOTE';
-  const CLEARSCREEN = 'CLEARSCREEN';
-  const REMOVEARROWS = 'REMOVEARROWS';
-  const PIN = 'PIN';
   const SELECT = 'SELECT';
-  const TEXTEDIT = 'TEXTEDIT';
-  const IMPORTPROB = 'IMPORTPROB';
-
-  // ACTIONS
-  const UNDO = 'UNDO';
-  const REDO = 'REDO';
-  const ADDNODE = 'ADDNODE';
-  const DELETENODE = 'DELETENODE';
-  const DELEDGE = 'DELEDGE';
-  const CLEARHISTORY = 'CLEARHISTORY';
-  const NODEEDIT = 'NODEEDIT';
-  const EDGEEDIT = 'EDGEEDIT';
   const SHAPE = 'SHAPE';
-  const COLOR = 'COLOR';
   const TEXT = 'TEXT';
+  const TEXTEDIT = 'TEXTEDIT';
+  const UNDERLINE = 'UNDERLINE';
+  const UNDO = 'UNDO';
   const WIDTH = 'WIDTH';
 
 
   export default {
     props: ['hypothesisId', 'nodes', 'highlightedNodeId', 'savedDiagram', 'width', 'height', 'textNodes', 'imgDropGraph', 'getDlist'],
     name: 'graph-viz',
-    components: { nodeList, toolBar },
+    components: {
+      nodeList,
+      toolBar,
+      'photoshop-picker': Compact
+    },
     data() {
       return {
+        ifColorPickerOpen: false,
+        updateValue: null,
+        styleObject: {
+          top: '230px',
+          left: '230px',
+          position: 'absolute'
+        },
+        colors: {
+          hex: '#FFFFFF',
+        },
         graph: undefined,
         nodesOutsideDiagram: [],
         mouseState: POINTER,
@@ -68,6 +93,8 @@
         dbClickCreateNode: true,
         canKeyboardUndo: true,
         rootObservable: new Rx.Subject(),
+        scale: 1,
+        activeSelect: new Selection(),
       };
     },
     mounted() {
@@ -80,7 +107,7 @@
         .filter(() => this.mouseState === POINTER)
         .subscribe((e) => {
           this.rootObservable.next({
-            type: ADDNODE,
+            type: CREATE,
             newNode: { text: e.clipboardData.getData('text/plain') },
           });
         });
@@ -139,18 +166,18 @@
 
         function imageToBase64(img) {
           if (!img) return;
-          var canvas, ctx, dataURL, base64;
+          let canvas, ctx, dataURL, base64;
           canvas = document.createElement('canvas');
           ctx = canvas.getContext('2d');
-          var cw = canvas.width;
-          var ch = canvas.height;
-          var maxW = 150;
-          var maxH = 100;
-          var iw = img.width;
-          var ih = img.height;
-          var scale = Math.min((maxW / iw), (maxH / ih));
-          var iwScaled = iw * scale;
-          var ihScaled = ih * scale;
+          const cw = canvas.width;
+          const ch = canvas.height;
+          const maxW = 150;
+          const maxH = 100;
+          const iw = img.width;
+          const ih = img.height;
+          const scale = Math.min((maxW / iw), (maxH / ih));
+          const iwScaled = iw * scale;
+          const ihScaled = ih * scale;
           canvas.width = iwScaled;
           canvas.height = ihScaled;
           ctx.drawImage(img, 0, 0, iwScaled, ihScaled);
@@ -162,13 +189,23 @@
         let img = document.querySelector('[src = "' + current.imgSrc + '"]');
         if (!img) return;
         let base64 = imageToBase64(img);
-        var parts = img.getAttribute('src').split('/');
-        var id = parts[parts.length - 1];
+        const parts = img.getAttribute('src').split('/');
+        const id = parts[parts.length - 1];
+
+        const nodeImg = {
+          src: base64,
+          width: 60,
+          height: 70,
+          class: 'img-node'
+        };
         if (current.dropped && current.dropped !== old.dropped) {
           if (!current.existingNode) {
             this.rootObservable.next({
-              type: ADDNODE,
-              newNode: { text: '<img style="max-width:80px; max-height:80px; width:auto; height:auto;" id="' + id + '" src="data:image/png;base64,' + base64 + '"/>\nNew' },
+              type: CREATE,
+              newNode: {
+                text: 'New',
+                img: nodeImg
+              },
             });
           } else {
             let node = null;
@@ -177,14 +214,16 @@
               return;
             }
             node = this.toNode(this.textNodes[indexOfNode]);
-            if (node.text.includes('<img')) {
-              node.text = node.text.replace(/<img[^>]*>/g, '');
-              node.text = node.text.replace(/\n/g, '');
-            }
+            node.img = {
+              src: base64,
+              width: 60,
+              height: 70,
+              class: 'img-node'
+            };
             this.rootObservable.next({
               type: NODEEDIT,
-              prop: TEXT,
-              value: '<img style="max-width:80px; max-height:80px; width:auto; height:auto;" id="' + id + '" src="data:image/png;base64,' + base64 + '"/>\n' + node.text,
+              prop: IMAGE,
+              value: node.img,
               id: current.existingNode.id,
             });
           }
@@ -242,67 +281,54 @@
     },
 
     methods: {
+      async showLoadingMask(text) {
+        const target = this.$el;
+        const options = {
+          target: target,
+          text: text
+        };
+        target.style.opacity = '0.2';
+        this.responseLoadingMask = this.$loading(options);
+        return await this.$nextTick();
+      },
+      hideLoadingMask() {
+        let me = this;
+        if (me.responseLoadingMask) {
+          me.responseLoadingMask.close();
+        }
+      },
+      // onColorOk(ev) {
+      //   this.ifColorPickerOpen = false;
+      //   let newColor = '#FFFFFF';
+      //   if (!this.colors) {
+      //     return;
+      //   }
+      //   if (typeof this.colors === 'object') {
+      //     newColor = this.colors.hex;
+      //   } else if (typeof this.colors === 'string' && this.colors.startsWith('#')) {
+      //     newColor = this.colors;
+      //   }
+      //   this.coloredEl[0].setAttribute('fill', newColor);
+      //   this.rootObservable.next({
+      //     type: NODEEDIT,
+      //     prop: COLOR,
+      //     value: newColor,
+      //     id: this.coloredNode.id,
+      //   });
+      // },
+
+      updateFromPicker(value) {
+        this.ifColorPickerOpen = false;
+        this.colors = value;
+        this.rootObservable.next({
+          type: NODEEDIT,
+          prop: COLOR,
+          value: value.hex,
+          id: this.coloredNodeId,
+        });
+      },
 
       actions($action) {
-        const addNode = (action) => {
-          // if no node, create new node
-          if (action.newNode) {
-            const textNode = {
-              id: 'note-' + uuid.v4(),
-              class: 'b-no-snip',
-              nodeShape: 'rect',
-              text: action.newNode.text ? action.newNode.text : 'New',
-              isSnip: false,
-              fixed: true,
-              color: '#ffffff',
-              fixedWidth: false,
-            };
-            const indexOfNode = this.textNodes.map(v => v.id).indexOf(textNode.id);
-            if (indexOfNode === -1) this.textNodes.push(textNode);
-            if (action.newNode.x && action.newNode.y) {
-              this.addNodeHelper(textNode.id, action.newNode.x, action.newNode.y);
-            } else {
-              this.addNodeHelper(textNode.id);
-            }
-            this.notes += 1;
-            this.noteObjs = [...this.noteObjs, textNode];
-            this.resetTools();
-            return textNode;
-          }
-          // if existing node, add to graph
-          if (action.existingNode) {
-            this.graph.addNode(this.toNode(action.existingNode));
-            this.recalculateNodesOutside();
-            // TODO fixed width nodes on addition size incorrectly. 2nd restart required
-            this.graph.restart.layout();
-            return action.existingNode;
-          }
-          // if prob import
-          // TODO finish addNode method. support multiple node addition, simplify node addition and creation
-          if (action.probNode) {
-            const n = action.probNode;
-            const indexOfNode = this.textNodes.map(v => v.id).indexOf(n.id);
-            if (indexOfNode === -1) this.textNodes.push(n);
-            this.addNodeHelper(n.id);
-            this.notes += 1;
-            this.noteObjs = [...this.noteObjs, n];
-            this.resetTools();
-            return n;
-          }
-        };
-
-        const delNode = (nodeId) => {
-          this.graph.removeNode(nodeId, this.recalculateNodesOutside);
-        };
-
-        const delEdge = (triplet) => {
-          if (Array.isArray(triplet)) {
-            triplet.forEach(t => this.graph.removeTriplet(t));
-          } else {
-            this.graph.removeTriplet(triplet);
-          }
-        };
-
         let undoStack = [];
         let redoStack = [];
 
@@ -320,7 +346,7 @@
                 if (undoStack.length > 0) {
                   const saveRedo = redoStack;
                   const nextAction = undoStack.pop();
-                  if (nextAction.type === DELETENODE || nextAction.type === CREATEEDGE) {
+                  if (nextAction.type === DELETE || nextAction.type === CREATE) {
                     nextAction.callback = () => {
                       redoStack = saveRedo;
                       redoStack.push(undoStack.pop());
@@ -350,42 +376,136 @@
                 break;
               }
 
-              case ADDNODE: {
-                const node = addNode(action);
-                undoStack.push({
-                  type: DELETENODE,
-                  id: node.id,
-                });
+              case CREATE: {
+                let fixedWidthNodePresent = false;
+                // create Nodes
+                let nodes = [];
+                // new nodes are nodes that have not been added to the graph yet
+                if (action.newNode) {
+                  const newNodes = Array.isArray(action.newNode) ? action.newNode : [action.newNode];
+                  const newNodeArr = newNodes.map(n => {
+                    const defaultNode = {
+                      id: 'note-' + uuid.v4(),
+                      class: 'b-no-snip',
+                      nodeShape: 'capsule',
+                      text: 'New',
+                      img: false,
+                      isSnip: false,
+                      fixed: true,
+                      color: '#ffffff',
+                      fixedWidth: false,
+                    };
+                    const textNode = Object.assign({}, defaultNode, n);
+                    const indexOfNode = this.textNodes.map(v => v.id).indexOf(textNode.id);
+                    if (indexOfNode === -1) this.textNodes.push(textNode);
+                    this.addNodeHelper(textNode.id);
+                    this.notes += 1;
+                    this.noteObjs = [...this.noteObjs, textNode];
+                    this.resetTools();
+                    if (textNode.fixedWidth) {
+                      fixedWidthNodePresent = true;
+                    }
+                    return textNode;
+                  });
+                  nodes = nodes.concat(newNodeArr);
+                }
+                // existing nodes are nodes that are being re added after being deleted.
+                if (action.existingNode) {
+                  const newNodes = Array.isArray(action.existingNode) ? action.existingNode : [action.existingNode];
+                  newNodes.forEach(n => {
+                    this.graph.addNode(this.toNode(n));
+                    this.recalculateNodesOutside();
+                    if (n.fixedWidth) {
+                      fixedWidthNodePresent = true;
+                    }
+                  });
+                  nodes = nodes.concat(newNodes);
+                }
+
+                // add edges
+                let triplet;
+                if (action.triplet) {
+                  triplet = Array.isArray(action.triplet) ? action.triplet : [action.triplet];
+                } else {
+                  triplet = [];
+                }
+                Promise.all(triplet.map(t => this.graph.addTriplet(t)))
+                // add to undo stack
+                  .then(() => {
+                    undoStack.push({
+                      type: DELETE,
+                      nodeId: nodes.map(n => n.id),
+                      triplet: triplet,
+                    });
+                  })
+                  // perform callbacks
+                  .then(() => {
+                    if (action.callback) {
+                      action.callback();
+                    }
+                  })
+                  .catch((err) => {
+                    console.log(err);
+                  });
+
+                // TODO fixed width nodes on addition size incorrectly. 2nd restart required
+                if (fixedWidthNodePresent) {
+                  this.graph.restart.layout();
+                }
                 break;
               }
 
-              case DELETENODE: {
+              case DELETE: {
                 // get all edges attached to node
                 const db = this.graph.getDB();
-                const node = this.graph.getNode(action.id);
-                const subjectEdges = new Promise((resolve, reject) => {
-                  db.get({ subject: node.id }, (err, l) => {
-                    if (err) {
-                      reject(err);
-                    } else {
-                      resolve(l);
-                    }
+                let nodeIds;
+                let edgeArray;
+                if (action.nodeId) {
+                  nodeIds = Array.isArray(action.nodeId) ? action.nodeId : [action.nodeId];
+                } else {
+                  nodeIds = [];
+                }
+                if (action.triplet) {
+                  edgeArray = Array.isArray(action.triplet) ? action.triplet : [action.triplet];
+                } else {
+                  edgeArray = [];
+                }
+                const nodeArray = nodeIds.map(id => this.graph.getNode(id));
+                // promise containing all subject edges form DB
+                const subjectEdges = nodeIds.map(id => {
+                  return new Promise((resolve, reject) => {
+                    db.get({ subject: id }, (err, l) => {
+                      if (err) {
+                        reject(err);
+                      } else {
+                        resolve(l);
+                      }
+                    });
                   });
                 });
-
-                const objectEdges = new Promise((resolve, reject) => {
-                  db.get({ object: node.id }, (err, l) => {
-                    if (err) {
-                      reject(err);
-                    } else {
-                      resolve(l);
-                    }
+                // promise containing all object edges from DB
+                const objectEdges = nodeIds.map(id => {
+                  return new Promise((resolve, reject) => {
+                    db.get({ object: id }, (err, l) => {
+                      if (err) {
+                        reject(err);
+                      } else {
+                        resolve(l);
+                      }
+                    });
                   });
                 });
+                // promise containing edges selected for deletion
+                const edgePromise = edgeArray.map(triplet => {
+                  triplet.subject = triplet.subject.id;
+                  triplet.object = triplet.object.id;
+                  return Promise.resolve(triplet);
+                });
 
-                Promise.all([subjectEdges, objectEdges])
+                Promise.all([...subjectEdges, ...objectEdges, ...edgePromise])
+                //map database triplets to edge objects
                   .then((values) => {
-                    const edges = [].concat.apply([], values)
+                    return [].concat.apply([], values)
                       .map((x) => {
                         const indexOfSubject = this.textNodes.map(v => v && v.id).indexOf(x.subject);
                         const indexOfObject = this.textNodes.map(v => v && v.id).indexOf(x.object);
@@ -397,26 +517,38 @@
                           };
                         }
                       });
-                    // delete all edges attached to node
-                    if (edges.length > 0) {
-                      this.rootObservable.next({
-                        type: DELEDGE,
-                        tripletObject: edges,
-                      });
-                    }
-                    // delete node
-                    delNode(node.id);
-                    undoStack.push({
-                      type: ADDNODE,
-                      existingNode: node,
+                  })
+                  //remove duplicate edges
+                  .then((edges) => {
+                    const edgeMap = new Map();
+                    edges.forEach((edge) => {
+                      edgeMap.set(edge.predicate.hash, edge);
                     });
-
+                    return [...edgeMap.values()];
+                  })
+                  // delete all edges
+                  .then((edges) => {
+                    return Promise.all(edges.map(t => this.graph.removeTriplet(t)))
+                    // delete all nodes
+                      .then(() => {
+                        nodeIds.forEach(id => this.graph.removeNode(id, this.recalculateNodesOutside));
+                      })
+                      // add to undo stack
+                      .then(() => {
+                        undoStack.push({
+                          type: CREATE,
+                          triplet: edges,
+                          existingNode: nodeArray,
+                        });
+                      });
+                  })
+                  // perform callbacks
+                  .then(() => {
                     if (action.callback) {
                       action.callback();
                     }
                   })
                   .catch(err => console.log(err));
-
                 break;
               }
 
@@ -441,6 +573,15 @@
                     textNodesEditHelper('text');
                     this.graph.editNode({
                       property: 'shortname',
+                      id: idArray,
+                      value: values,
+                    });
+                    break;
+                  }
+                  case IMAGE: {
+                    textNodesEditHelper('img');
+                    this.graph.editNode({
+                      property: 'img',
                       id: idArray,
                       value: values,
                     });
@@ -496,44 +637,6 @@
                   prop: action.prop,
                   value: oldValues,
                   id: action.id,
-                });
-                break;
-              }
-
-              case CREATEEDGE: {
-                const triplet = action.tripletObject;
-                if (Array.isArray(triplet)) { // TODO error handling for multiple edge creation
-                  triplet.forEach(t => this.graph.addTriplet(t));
-                  undoStack.push({
-                    type: DELEDGE,
-                    tripletObject: triplet,
-                  });
-                  if (action.callback) {
-                    action.callback();
-                  }
-                } else {
-                  const promise = this.graph.addTriplet(triplet);
-                  promise.then(() => {
-                    undoStack.push({
-                      type: DELEDGE,
-                      tripletObject: triplet,
-                    });
-                    if (action.callback) {
-                      action.callback();
-                    }
-                  })
-                    .catch((err) => {
-                      console.log(err);
-                    });
-                }
-                break;
-              }
-
-              case DELEDGE: {
-                delEdge(action.tripletObject);
-                undoStack.push({
-                  type: CREATEEDGE,
-                  tripletObject: action.tripletObject,
                 });
                 break;
               }
@@ -632,7 +735,8 @@
           },
 
           nodeToPin: function nodeToPin(d) {
-            return d.fixed ? d.fixed : false;
+            // 1st bit is user set, second bit is set by d3 whilst dragging. hence check LSB if d.fixed is not bool
+            return (d.fixed === true || d.fixed % 2 === 1);
           },
 
           updateNodeColor: (node, color) => {
@@ -653,8 +757,10 @@
             });
           },
 
+          nodeShape: 'capsule',
+
           // Shapes defined: rect, circle, capsule
-          nodeShape: (d) => {
+          nodePath: (d) => {
             switch (d.nodeShape) {
               case 'rect': {
                 return 'M16 48 L48 48 L48 16 L16 16 Z';
@@ -662,15 +768,42 @@
               case 'circle': {
                 return 'M20,40a20,20 0 1,0 40,0a20,20 0 1,0 -40,0';
               }
+              // case 'capsule': {
+              //   const X = 37;
+              //   const Y = -13;
+              //   const p1x = 25 + X;
+              //   const p1y = 25 + Y;
+              //   const p2x = 75 + X;
+              //   const p3x = 100 + X;
+              //   const p4y = 50 + Y;
+              //   return `M ${p1x} ${p1y} L ${p2x} ${p1y} C ${p3x} ${p1y} ${p3x} ${p4y} ${p2x} ${p4y} L ${p1x} ${p4y} C ${X} ${p4y} ${X} ${p1y} ${p1x} ${p1y} `;
+              // }
               case 'capsule': {
-                const X = 37;
-                const Y = -13;
-                const p1x = 25 + X;
-                const p1y = 25 + Y;
-                const p2x = 75 + X;
-                const p3x = 100 + X;
-                const p4y = 50 + Y;
-                return `M ${p1x} ${p1y} L ${p2x} ${p1y} C ${p3x} ${p1y} ${p3x} ${p4y} ${p2x} ${p4y} L ${p1x} ${p4y} C ${X} ${p4y} ${X} ${p1y} ${p1x} ${p1y} `;
+                const width = d.width;
+                const height = d.height;
+                if (width && height) {
+                  const x = width / 2;
+                  const y = height / 2;
+                  const r = Math.round(Math.min(width, height) / 8);
+                  const v0 = { x: x, y: y };
+                  const v1 = { x: x, y: y + height };
+                  const v2 = { x: x + width, y: y + height };
+                  const v3 = { x: x + width, y: y };
+                  return [`M${v0.x} ${v0.y + r}`,
+                    `V${v1.y - r}`,
+                    `C${v1.x} ${v1.y} ${v1.x + r} ${v1.y} ${v1.x + r} ${v1.y}`,
+                    `H${v2.x - r}`,
+                    `C${v2.x} ${v2.y} ${v2.x} ${v2.y - r} ${v2.x} ${v2.y - r}`,
+                    `V${v3.y + r}`,
+                    `C${v3.x} ${v3.y} ${v3.x - r} ${v3.y} ${v3.x - r} ${v3.y}`,
+                    `H${v0.x + r}`,
+                    `C${v0.x} ${v0.y} ${v0.x} ${v0.y + r} ${v0.x} ${v0.y + r} Z`]
+                    .join(' ');
+                } else {
+                  return 'M16 20 V44 C16 48 20 48 20 48 H44 C48 48 48 44 48 44 V20 C48 16 44 16 44 16 H20 C16 16 16 20 16 20 Z';
+                }
+
+
               }
               default : {
                 // Return rect by default
@@ -689,12 +822,50 @@
             }
           },
 
-          colorPickerOpen: (node) => {
-            this.ifColorPickerOpen = true;
+          zoomScale: (scale) => {
+            this.scale = scale;
           },
 
-          colorPickerClose: (node) => {
-            this.ifColorPickerOpen = false;
+          mouseOverBrush: (ev, element, node) => {
+            me.dbClickCreateNode = false;
+            me.ifColorPickerOpen = true;
+            me.coloredEl = element._groups[0];
+            me.coloredNodeId = node.id;
+            me.colors = node.color;
+            me.$refs.vueColorPicker.currentColor = node.color;
+
+            let grapgEditor = document.getElementById('graph').getBoundingClientRect();
+            let graphEditorX = grapgEditor.x;
+            let graphEditorY = grapgEditor.y;
+            let graphEditorW = grapgEditor.width;
+            let graphEditorH = grapgEditor.height;
+            let posX = ev.clientX - graphEditorX;
+            let posY = ev.clientY + 30;
+
+            if (posX + 250 > graphEditorW) {
+              posX = posX - 250;
+            }
+            if (posY < 0) {
+              posY = 0;
+            }
+            if (posY + 70 > graphEditorH) {
+              posY = posY - (posY + 80 - graphEditorH);
+            }
+            this.styleObject = {
+              position: 'absolute !important',
+              top: posY + 'px !important',
+              left: posX + 'px !important',
+              'z-index': '9999'
+            };
+            const svgElem = this.graph.getSVGElement().node();
+            Rx.Observable.fromEvent(svgElem, 'click')
+              .takeWhile(() => this.ifColorPickerOpen === true)
+              .take(1)
+              .do(e => e.stopPropagation())
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.ifColorPickerOpen = false;
+              });
           },
 
           mouseOverNode: (node, selection) => {
@@ -728,8 +899,6 @@
           },
 
           startArrow: (node, selection) => {
-            // console.log("startArrow", node, selection, this.toNode);
-            // console.log(this.$data.mouseState);
             this.mouseState = CREATEEDGE;
             this.currentNode = node;
             $mousedown.next({ type: 'CREATEEDGE', clickedNode: node, selection });
@@ -745,35 +914,42 @@
           },
 
           nodeRemove: (node) => {
+            this.activeSelect.deselect(node);
             this.rootObservable.next({
-              type: DELETENODE,
-              id: node.id,
+              type: DELETE,
+              nodeId: node.id,
             });
           },
 
           edgeRemove: (edge) => {
             this.rootObservable.next({
-              type: DELEDGE,
-              tripletObject: edge,
+              type: DELETE,
+              triplet: edge,
             });
+          },
+
+          imgResize: (bool) => {
+            this.isResizing = bool;
           },
 
           resizeDrag: (node, selection, event) => {
             if (this.mouseState === TEXTEDIT) {
               return;
             }
+            this.changeMouseState(POINTER);
             this.isResizing = true;
             const initialX = event.clientX;
             const svgInitialX = this.transformCoordinates({ x: initialX, y: event.clientY }).x;
             const initWidth = node.width;
+
             Rx.Observable.fromEvent(document, 'mousemove')
               .do(e => e.stopPropagation())
               .map(e => this.transformCoordinates({ x: e.clientX, y: event.clientY }).x)
               .map(moveX => moveX - svgInitialX)
               .map(dx => initWidth + (dx * 2))
               .filter((width) => {
-                const img = selection.node().parentNode.querySelector('text img');
-                const imgWidth = img ? img.offsetWidth : 0;
+                const img = selection.node().parentNode.querySelector('image');
+                const imgWidth = img ? img.getBBox().width : 0;
                 const minWidth = imgWidth + 30;
                 return width > minWidth;
               })
@@ -795,27 +971,23 @@
           },
 
           canDrag: () => this.$data.mouseState === POINTER && !this.isResizing,
+
+          isSelect: () => {
+            return this.$data.mouseState === SELECT;
+          },
         });
 
 
         /**
          Edge link tool
          **/
-        // commented out: drawing arrows via the side panel
-        // this.graph.nodeOptions.setMouseDown((node, selection) => {
-        //   if (this.mouseState === CREATEEDGE) {
-        //     console.log("setMouseDown",this,node,selection);
-        //     this.currentNode = node;
-        //     $mousedown.next({type: 'CREATEEDGE', clickedNode: node, selection});
-        //   }
-        // });
         this.linkTool = linkTool(this.graph, $mousedown, $mouseOverNode, this.toNode, (tripletObject) => {
           this.rootObservable.next({
-            type: CREATEEDGE,
-            tripletObject: tripletObject,
+            type: CREATE,
+            triplet: tripletObject,
           });
         }, () => {
-          this.mouseState = POINTER;
+          this.changeMouseState(POINTER);
         });
         this.linkToolDispose = this.linkTool(this.textNodes);
         // Set the action of clicking the edge:
@@ -868,7 +1040,7 @@
           this.mouseState = TEXTEDIT;
         }, () => {
           this.canKeyboardUndo = true;
-          this.mouseState = POINTER;
+          this.changeMouseState(POINTER);
         });
 
         // set clickedgraphviz to true first time user clicks
@@ -928,7 +1100,7 @@
         if (!this.dbClickCreateNode || this.ifColorPickerOpen || this.mouseState === TEXTEDIT) return;
         const coords = this.transformCoordinates({ x: e.clientX, y: e.clientY });
         this.rootObservable.next({
-          type: ADDNODE,
+          type: CREATE,
           newNode: coords,
         });
       },
@@ -940,124 +1112,235 @@
 
       recalculateNodesOutside() {
         this.nodesOutsideDiagram = this.textNodes.filter((v) => {
-          const result = !this.graph.hasNode(`${v.id}`);
-          return result;
+          return !this.graph.hasNode(`${v.id}`);
         });
       },
 
       changeMouseState(state) {
-        if (!(state === DELETE
-          || state === CREATEEDGE
-          || state === POINTER
-          || state === SAVE
-          || state === ADDNOTE
+        if (!(state === ADDNOTE
+          || state === BOLD
           || state === CLEARSCREEN
+          || state === COPY
+          || state === COLOR
+          || state === DELETE
           || state === IMPORTPROB
-          || state === REMOVEARROWS
+          || state === ITALIC
           || state === PIN
+          || state === POINTER
+          || state === REDO
+          || state === REMOVEARROWS
+          || state === SAVE
           || state === SELECT
-          || state === UNDO
-          || state === REDO)) {
+          || state === UNDERLINE
+          || state === UNDO)) {
           console.error('Not sure what state', state, 'is');
         } else {
           this.mouseState = state;
         }
         switch (state) {
-          case SAVE: {
-            this.mouseState = POINTER;
-            this.deleteRadial();
-            setTimeout(() => {
-              this.graph.saveGraph((savedData) => {
-                this.$emit('save', savedData, this.graph.getSVGElement().node(), this.textNodes);
-              });
-            }, 50);
-            break;
-          }
+
           case ADDNOTE: {
-            this.mouseState = POINTER;
+            this.changeMouseState(POINTER);
             this.rootObservable.next({
-              type: ADDNODE,
+              type: CREATE,
               newNode: true,
             });
             break;
           }
+
+          case BOLD: {
+            this.mouseState = SELECT;
+            const nodes = [...this.activeSelect.nodes.values()];
+            if (nodes.length === 0) break;
+            const reCheckBold = /^ *(<.*>)*(<b>)(.*)(<\/b>)(<\/.*>)* *$/;
+            const bold = nodes.every((d) => reCheckBold.test(d.shortname));
+            const values = nodes.map(d => {
+              // remove existing bold tags
+              let str = d.shortname.replace(/<b>|<\/b>/g, '');
+              if (!bold) {
+                // add bold tags to outside of string
+                str = '<b>' + str + '</b>';
+              }
+              return str;
+            });
+            this.rootObservable.next({
+              type: NODEEDIT,
+              prop: TEXT,
+              id: [...this.activeSelect.nodes.keys()],
+              value: values,
+            });
+            break;
+          }
+
           case CLEARSCREEN: {
-            this.mouseState = POINTER;
+            this.changeMouseState(POINTER);
             this.clearScreen();
             this.rootObservable.next({ type: CLEARHISTORY });
             break;
           }
 
+          case COLOR: {
+            this.mouseState = SELECT;
+            this.dbClickCreateNode = false;
+            this.ifColorPickerOpen = true;
+            this.coloredNodeId = [...this.activeSelect.nodes.keys()];
+            this.colors = '#FFFFFF';
+            this.styleObject = {
+              position: 'absolute !important',
+              top: 70 + 'px !important',
+              right: 95 + 'px !important',
+              'z-index': '9999'
+            };
+            const svgElem = this.graph.getSVGElement().node();
+            Rx.Observable.fromEvent(svgElem, 'click')
+              .takeWhile(() => this.ifColorPickerOpen === true)
+              .take(1)
+              .do(e => e.stopPropagation())
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.ifColorPickerOpen = false;
+              });
+            break;
+          }
+
+          case COPY: {
+            this.mouseState = SELECT;
+            if (this.activeSelect.nodes.size === 0) break;
+            this.rootObservable.next({
+              type: CREATE,
+              newNode: [...this.activeSelect.nodes.values()].map(d => {
+                const { color, fixed, fixedWidth, img, isSnip, nodeShape, shortname } = d;
+                return {
+                  color,
+                  fixed,
+                  fixedWidth,
+                  img,
+                  isSnip,
+                  nodeShape,
+                  shortname,
+                  class: d.class.replace(' highlight', ''),
+                };
+              })
+            });
+            break;
+          }
+
+          case DELETE: {
+            const nodes = [...this.activeSelect.nodes.keys()];
+            if (this.activeSelect.size === 0) break;
+            this.changeMouseState(POINTER);
+            this.activeSelect.clear();
+            this.rootObservable.next({
+              type: DELETE,
+              nodeId: nodes,
+            });
+            break;
+          }
+
           case IMPORTPROB: {
+            this.changeMouseState(POINTER);
             // test case
             // const Dlist = { X: new Set(), Y: new Set('X'), Z: new Set('X'), A: new Set('B'), B: new Set() };
-            this.mouseState = POINTER;
             const Dlist = this.getDlist && this.getDlist();
             if (!Dlist || Object.keys(Dlist).length === 0) return;
-            const listOfNodes = {};
+            const objOfNodes = {};
             const listOfEdges = [];
             Object.keys(Dlist).forEach((D) => {
-              listOfNodes[D] = this.toNode({
-                id: 'note-' + uuid.v4(),
-                class: 'b-no-snip',
+              const id = 'note-' + uuid.v4();
+              objOfNodes[D] = {
+                id: id,
                 nodeShape: 'circle',
                 text: D,
-                isSnip: false,
                 fixed: false,
-                color: '#ffffff',
-                fixedWidth: false,
-              });
-            });
-
-            Object.values(listOfNodes).forEach((node) => {
-              this.rootObservable.next({
-                type: ADDNODE,
-                probNode: node,
-              });
+                hash: id,
+              };
             });
 
             Object.entries(Dlist).forEach(([key, val]) => {
               val.forEach((n) => {
                 listOfEdges.push({
-                  subject: listOfNodes[n],
+                  subject: objOfNodes[n],
                   predicate: {
                     type: 'arrow',
                     text: '',
-                    hash: uuid.v4(),
-                    subject: listOfNodes[n].id,
-                    object: listOfNodes[key].id,
+                    hash: 'edge-' + uuid.v4(),
+                    subject: objOfNodes[n].id,
+                    object: objOfNodes[key].id,
                     constraint: {
                       axis: 'y',
                       type: 'separation',
-                      leftID: listOfNodes[n].id,
-                      rightID: listOfNodes[key].id,
+                      leftID: objOfNodes[n].id,
+                      rightID: objOfNodes[key].id,
                       gap: 170,
                     },
                   },
-                  object: listOfNodes[key],
+                  object: objOfNodes[key],
                 });
               });
             });
 
             this.rootObservable.next({
-              type: CREATEEDGE,
-              tripletObject: listOfEdges,
-              callback: this.graph.restart.handleDisconnects
+              type: CREATE,
+              newNode: Object.values(objOfNodes),
+              triplet: listOfEdges,
+              callback: this.graph.restart.handleDisconnects,
             });
             break;
           }
 
+          case ITALIC: {
+            this.mouseState = SELECT;
+            const nodes = [...this.activeSelect.nodes.values()];
+            if (nodes.length === 0) break;
+            const reCheckItalic = /^ *(<.*>)*(<i>)(.*)(<\/i>)(<\/.*>)* *$/;
+            const italic = nodes.every((d) => reCheckItalic.test(d.shortname));
+            const values = nodes.map(d => {
+              let str = d.shortname.replace(/<i>|<\/i>/g, ''); // remove existing italic tags
+              if (!italic) {
+                str = '<i>' + str + '</i>';// add italic tags to outside of string
+              }
+              return str;
+            });
+            this.rootObservable.next({
+              type: NODEEDIT,
+              prop: TEXT,
+              id: [...this.activeSelect.nodes.keys()],
+              value: values,
+            });
+            break;
+          }
+
+          case PIN: {
+            this.mouseState = SELECT;
+            if (this.activeSelect.nodes.size === 0) break;
+            this.rootObservable.next({
+              type: NODEEDIT,
+              prop: PIN,
+              id: [...this.activeSelect.nodes.keys()],
+              value: [...this.activeSelect.nodes.values()].map(d => !d.fixed),
+            });
+            break;
+          }
+
+          case POINTER: {
+            this.activeSelect.clear();
+            this.graph.restart.styles();
+            break;
+          }
+
+          case REDO: {
+            this.changeMouseState(POINTER);
+            this.rootObservable.next({ type: REDO });
+            break;
+          }
+
           case REMOVEARROWS: {
-            this.mouseState = POINTER;
+            this.changeMouseState(POINTER);
             const db = this.graph.getDB();
             db.get({}, (err, l) => {
-              console.log('LOOKING IN DB');
               if (err) {
                 console.error(err);
               }
-              console.log(l);
-
-
               const triplets = l.map((x) => {
                 const indexOfSubject = this.textNodes.map(v => v && v.id).indexOf(x.subject);
                 const indexOfObject = this.textNodes.map(v => v && v.id).indexOf(x.object);
@@ -1070,22 +1353,191 @@
                 }
               });
               this.rootObservable.next({
-                type: DELEDGE,
-                tripletObject: triplets,
+                type: DELETE,
+                triplet: triplets,
               });
             });
             break;
           }
+
+          case SAVE: {
+            this.changeMouseState(POINTER);
+            this.deleteRadial();
+
+            const text = 'Saving Graph...';
+            this.showLoadingMask(text);
+
+            setTimeout(() => {
+              this.graph.saveGraph((savedData) => {
+                this.$emit('save', savedData, this.graph.getSVGElement().node(), this.textNodes);
+              });
+            }, 50);
+            break;
+          }
+
+          case SELECT: {
+            const svg = this.graph.getSVGElement();
+            Rx.Observable.fromEvent(svg.node(), 'mousedown')
+              .takeWhile(() => this.mouseState === SELECT)
+              .do(e => e.preventDefault())
+              .do(e => e.stopPropagation())
+              .map(e => ({ ...this.transformCoordinates({ x: e.x, y: e.y }), shift: e.shiftKey, alt: e.altKey }))
+              .map(({ x, y, shift, alt }) => {
+                if (!shift && !alt) {
+                  this.activeSelect.clear();
+                }
+                return { x, y, addTo: !alt };
+              })
+              .map(({ x, y, addTo }) => {
+                const g = svg.select('.svg-graph');
+                const elem = g.append('path')
+                  .attr('id', 'selector')
+                  .attr('d', `M${x} ${y} H${x} V${y} H${x}Z`)
+                  .attr('style', 'stroke:rgba(129, 179, 254);stroke-width:1')
+                  .attr('shape-rendering', 'crispEdges')
+                  .attr('fill', 'rgba(0, 110, 251, 0.1)')
+                  .attr('stroke-dasharray', '4 3');
+                return { x, y, addTo, elem };
+              })
+              .subscribe(({ x, y, addTo, elem }) => {
+                Rx.Observable.fromEvent(document, 'mousemove')
+                  .do(e => e.preventDefault())
+                  .do(e => e.stopPropagation())
+                  .map(e => this.transformCoordinates({ x: e.x, y: e.y }))
+                  .map(e => ({ X: e.x, Y: e.y }))
+                  .map(({ X, Y }) => {
+                    elem.attr('d', `M${x} ${y} H${X} V${Y} H${x}Z`);
+                    return this.graph.selectByCoords({ x, X, y, Y });
+                  })
+                  .pairwise()
+                  .takeUntil(Rx.Observable.fromEvent(document, 'mouseup'))
+                  .finally(() => {
+                    elem.remove();
+                  })
+                  .subscribe(([oldSelect, currentSelect]) => {
+                    if (addTo) {
+                      this.activeSelect.deselect(oldSelect);
+                      this.activeSelect.select(currentSelect);
+                    } else {
+                      this.activeSelect.select(oldSelect);
+                      this.activeSelect.deselect(currentSelect);
+                    }
+                    this.graph.restart.styles();
+                  });
+              });
+
+            Rx.Observable.fromEvent(svg.node(), 'click')
+              .takeWhile(() => this.mouseState === SELECT)
+              .do(e => e.preventDefault())
+              .do(e => e.stopPropagation())
+              .map(e => ({ ...this.transformCoordinates({ x: e.x, y: e.y }), shift: e.shiftKey }))
+              .map(({ x, y, shift }) => {
+                if (!shift) {
+                  this.activeSelect.clear();
+                }
+                return { x, y };
+              })
+              .subscribe(({ x, y }) => {
+                const newSelect = this.graph.selectByCoords({ x, X: x, y, Y: y });
+                this.activeSelect.selectExclusive(newSelect);
+                this.graph.restart.styles();
+              });
+
+            /** DEFINE KEYBOARD SHORTCUTS FOR SELECT TOOL **/
+            const keyDown = Rx.Observable.fromEvent(document, 'keydown')
+              .takeWhile(() => this.mouseState === SELECT);
+
+            const ctrl = keyDown.filter(e => (e.ctrlKey && !e.shiftKey && !e.altKey));
+
+            keyDown.subscribe(e => console.log(e));
+
+            // ESC clear selection
+            keyDown.filter(e => e.keyCode === 27)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.activeSelect.clear();
+                this.graph.restart.styles();
+              });
+
+            // DEL delete
+            keyDown.filter(e => e.keyCode === 46)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.changeMouseState(DELETE);
+              });
+
+            // ctrl + C duplicate
+            ctrl.filter(e => e.keyCode === 67)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.changeMouseState(COPY);
+              });
+
+            // ctrl + U underline
+            ctrl.filter(e => e.keyCode === 85)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.changeMouseState(UNDERLINE);
+              });
+            // ctrl + B underline
+            ctrl.filter(e => e.keyCode === 66)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.changeMouseState(BOLD);
+              });
+            // ctrl + U underline
+            ctrl.filter(e => e.keyCode === 73)
+              .do(e => e.preventDefault())
+              .subscribe(() => {
+                this.changeMouseState(ITALIC);
+              });
+
+            // ctrl + A select all
+            ctrl.filter(e => e.keyCode === 65)
+              .subscribe(() => {
+                const newSelect = this.graph.selectByCoords({
+                  x: -Infinity,
+                  X: Infinity,
+                  y: -Infinity,
+                  Y: Infinity
+                });
+                this.activeSelect.select(newSelect);
+                this.graph.restart.styles();
+              });
+            break;
+          }
+
+          case UNDERLINE: {
+            this.mouseState = SELECT;
+            const nodes = [...this.activeSelect.nodes.values()];
+            if (nodes.length === 0) break;
+            const reCheckUnderlined = /^ *(<.*>)*(<u>)(.*)(<\/u>)(<\/.*>)* *$/;
+            const underline = nodes.every((d) => reCheckUnderlined.test(d.shortname));
+            const values = nodes.map(d => {
+              // remove existing underlines
+              // let str = d.shortname.replace(/^ *(<.*>)*(<u>)(.*)(<\/u>)(<\/.*>)* *$/, '$1$3$5');
+              let str = d.shortname.replace(/<u>|<\/u>/g, '');
+              if (!underline) {
+                // add underline tags inside other tegs
+                str = str.replace(/ *^((<[^<>]*>)*)(.*?)((<\/[^<>]*>)*)$ */, '$1<u>$3</u>$4');
+              }
+              return str;
+            });
+            this.rootObservable.next({
+              type: NODEEDIT,
+              prop: TEXT,
+              id: [...this.activeSelect.nodes.keys()],
+              value: values,
+            });
+            break;
+          }
+
           case UNDO: {
-            this.mouseState = POINTER;
+            this.changeMouseState(POINTER);
             this.rootObservable.next({ type: UNDO });
             break;
           }
-          case REDO: {
-            this.mouseState = POINTER;
-            this.rootObservable.next({ type: REDO });
-            break;
-          }
+
           default:
             break;
         }
@@ -1115,6 +1567,16 @@
 </script>
 
 <style>
+
+  .vc-compact {
+    width: 245px !important;
+    box-sizing: border-box;
+  }
+
+  .highlight {
+    stroke: rgb(129, 179, 254);
+  }
+
   .medium-editor-toolbar li button {
     font-size: 16px !important;
   }
